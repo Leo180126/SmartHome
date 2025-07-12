@@ -1,5 +1,24 @@
 #include <Arduino.h>
 #include <Keypad.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <ESP32_Servo.h>
+#include <secrets.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <DHT_U.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleWifi.h>
+
+// Marco for Blynk
+#define BLYNK_TEMPLATE_ID "TMPL6arNBTNbS"
+#define BLYNK_TEMPLATE_NAME "SmartHouseIOT"
+#define BLYNK_AUTH_TOKEN "NGXXK9hsZycdreAk_8WIc1q_kPrblQTd"
+
+const int dht11_pin = 32; // Theo Schematic Quyến vẽ thì là pin 6, t chỉ đg test ở đây th
+unsigned long int startup_timer = 0;
+float temperature = 0;
+float relative_humidity = 0;
 
 
 // Marco for keypad
@@ -23,31 +42,95 @@ Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 #define CLOCK_PIN 04  // SH_CP
 #define LATCH_PIN 02   // ST_CP
 byte leds = 0;
-// Function
-void _keypad();
-void sendByte(byte val);  
-// void myShiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t val);
-// void updateShiftRegisterL();
-// void updateShiftRegisterR();
 
+// Marco for HC-SR04
+#define TRIG_PIN 05    // Trigger pin
+#define ECHO_PIN 18   // Echo pin
+
+// Macro for MQ2
+#define MQ2_PIN 35
+
+// Macro for SERVO
+#define SERVO_PIN 17
+Servo myServo;
+
+// For LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Marco for BUZZER
+#define BUZZER_PIN 19
+
+// Marco for Fan
+#define FAN_PIN 23
+bool fanState = false; // True - quay, False - khong quay
+
+// Các biến chính
+String password = "123";
+String inputPassword = "";
+bool doorOpen = false;
+
+// Function decoration
+void sendByte(byte val);
+void checkKeypad();
+void checkGas();
+void checkPerson();
+void openDoor();
+void quayQuat(bool isQuay);
+void getData();
+void wifiConnect();
+void send_data();
 
 void setup() {
+  Serial.begin(115200);
   pinMode(DATA_PIN, OUTPUT);
   pinMode(CLOCK_PIN, OUTPUT);
   pinMode(LATCH_PIN, OUTPUT);
-  Serial.begin(115200);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(FAN_PIN, OUTPUT);
+  // Allow allocation of all timers
+  myServo.attach(SERVO_PIN, 500, 2400); // SG90: min=500us, max=2400us // Gắn vào GPIO 17, xung min–max
+  delay(1000);
+  Serial.println("Setup OK");
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0,0); lcd.print("Nhap mat khau:");
+  // startup_timer = millis();
+  wifiConnect();
+  Blynk.config(BLYNK_AUTH_TOKEN);
+  Blynk.connect();
+
+  dht.begin();
+
+  timer.setInterval(5000L, send_data);
 }
 
+BLYNK_WRITE(V1) {   
+  // Called when the datastream virtual pin V2 is updated 
+  // by Blynk.Console, Blynk.App, or HTTP API. 
+
+  String LedControl = param.asStr();
+  // OR:
+  //String value = param.asString();
+
+
+  Serial.print("V1 = '");
+  Serial.print(LedControl);
+  Serial.println("'");    
+    
+} // BLYNK_WRITE()
+
 void loop() {
-  sendByte(0b11111100);
-  sendByte(0b00111111);
+  getDataDHT(temperature, relative_humidity);
+  Blynk.run();
+  timer.run();
+  checkKeypad();
+  checkGas();
+  checkPerson();
 }
-void _keypad(){
-  char key = keypad.getKey();
-  if (key) {
-    Serial.println(key);
-  }
-}
+
+// Function definition
 void sendByte(byte val) {
   for (int i = 7; i >= 0; i--) {
     digitalWrite(CLOCK_PIN, LOW);
@@ -61,22 +144,101 @@ void sendByte(byte val) {
   delay(10);
   digitalWrite(LATCH_PIN, HIGH);
 }
-// void myShiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t val) {
-//   for (int i = 7; i >= 0; i--) {
-//     digitalWrite(clockPin, LOW);
-//     digitalWrite(dataPin, (val & (1 << i)) ? HIGH : LOW);
-//     delayMicroseconds(1);       // thêm delay nhỏ
-//     digitalWrite(clockPin, HIGH);
-//     delayMicroseconds(1);
-//   }
-// }
-// void updateShiftRegisterL(){
-//   digitalWrite(latchPin, LOW);
-//   shiftOut(dataPin, clockPin, MSBFIRST, leds);
-//   digitalWrite(latchPin, HIGH);
-// }
-// void updateShiftRegisterR(){
-//   digitalWrite(latchPin, LOW);
-//   shiftOut(dataPin, clockPin, LSBFIRST, leds);
-//   digitalWrite(latchPin, HIGH);
-// }
+void checkKeypad() {
+  char key = keypad.getKey();
+  Serial.println(key);
+  if (key) {
+    lcd.setCursor(0,1);
+    if (key == '#') {
+      if (inputPassword == password) {
+        lcd.clear();
+        lcd.print("Dung mat khau");
+        openDoor();
+      } else {
+        lcd.clear();
+        lcd.print("Sai! Thu lai");
+        delay(1500);
+      }
+      inputPassword = "";
+      lcd.clear(); lcd.print("Nhap mat khau:");
+    } else if (key == '*') {
+      inputPassword = "";
+      lcd.clear(); lcd.print("Nhap mat khau:");
+    } else {
+      inputPassword += key;
+      lcd.print(inputPassword);
+    }
+  }
+}
+void openDoor() {
+  myServo.write(90); // mở
+  doorOpen = true;
+  delay(5000);
+  myServo.write(0); // đóng
+  doorOpen = false;
+  delay(5000);
+}
+void checkGas() {
+  bool isQuay = false;
+  int gasValue = analogRead(MQ2_PIN);
+  if (gasValue > 2000) { // ngưỡng phát hiện tùy chỉnh
+    // digitalWrite(BUZZER_PIN, HIGH);
+    Serial.print("Chay roi: ");
+    isQuay = true;
+    Serial.println(gasValue);
+  } else {
+    // digitalWrite(BUZZER_PIN, LOW);
+    Serial.print("On roi");
+    isQuay = false;
+    Serial.println(gasValue);
+  }
+  if(isQuay != fanState){
+    quayQuat(isQuay);
+    fanState = isQuay;
+    
+  }
+}
+void checkPerson() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  float distance = duration * 0.034 / 2;
+  Serial.println(distance);
+  if (distance < 20) {
+    sendByte(0b11111111);// có người
+  } else {
+    sendByte(0b00000000);
+  }
+}
+void quayQuat(bool isQuay){
+  if(isQuay)
+    digitalWrite(FAN_PIN, HIGH);
+  else
+    digitalWrite(FAN_PIN, LOW);
+}
+void getDataDHT(float &temp, float &rh){
+  sensors_event_t event;
+  dht.temperature().getEvent(&event);
+  temp = event.temperature;
+  rh = dht.humidity().getEvent(&event);
+  rh = event.relative_humidity;
+  Serial.println(temp);
+  Serial.println(rh);
+}
+void wifiConnect(){
+  WiFi.begin(SECRET_SSID, SECRET_PASS);
+  Serial.print("Connecting to WiFi ..");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print('.');
+    delay(1000);
+  }
+  Serial.println("Connection established");
+}
+void send_data(){
+  Blynk.virtualWrite(V0, temperature);
+  Blynk.virtualWrite(V2, relative_humidity);
+}
