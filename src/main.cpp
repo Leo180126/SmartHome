@@ -7,15 +7,24 @@
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
-#include <WiFiClient.h>
-#include <BlynkSimpleWifi.h>
 
-// Marco for Blynk
+
+// Blynk define for include
 #define BLYNK_TEMPLATE_ID "TMPL6arNBTNbS"
 #define BLYNK_TEMPLATE_NAME "SmartHouseIOT"
 #define BLYNK_AUTH_TOKEN "NGXXK9hsZycdreAk_8WIc1q_kPrblQTd"
 
+
+#include <WiFiClient.h>
+#include <BlynkSimpleWifi.h>
+
+
+// For DHT and Blynk
 const int dht11_pin = 32; // Theo Schematic Quyến vẽ thì là pin 6, t chỉ đg test ở đây th
+
+BlynkTimer timer;
+DHT_Unified dht(dht11_pin, DHT11);
+
 unsigned long int startup_timer = 0;
 float temperature = 0;
 float relative_humidity = 0;
@@ -41,7 +50,7 @@ Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 #define DATA_PIN  15  // DS
 #define CLOCK_PIN 04  // SH_CP
 #define LATCH_PIN 02   // ST_CP
-byte leds = 0;
+byte leds = 0b00000000;
 
 // Marco for HC-SR04
 #define TRIG_PIN 05    // Trigger pin
@@ -69,6 +78,8 @@ String password = "123";
 String inputPassword = "";
 bool doorOpen = false;
 
+
+
 // Function decoration
 void sendByte(byte val);
 void checkKeypad();
@@ -76,9 +87,12 @@ void checkGas();
 void checkPerson();
 void openDoor();
 void quayQuat(bool isQuay);
-void getData();
+void getDataDHT(float &temp, float &rh);
 void wifiConnect();
 void send_data();
+byte toByte(String a);
+void ledDoor(bool state);
+byte updateByteFromString(byte original, String str);
 
 void setup() {
   Serial.begin(115200);
@@ -107,18 +121,20 @@ void setup() {
 }
 
 BLYNK_WRITE(V1) {   
-  // Called when the datastream virtual pin V2 is updated 
+  // Called when the datastream virtual pin V1 is updated 
   // by Blynk.Console, Blynk.App, or HTTP API. 
 
   String LedControl = param.asStr();
   // OR:
   //String value = param.asString();
-
-
-  Serial.print("V1 = '");
-  Serial.print(LedControl);
-  Serial.println("'");    
+  byte ledControlByte = toByte(LedControl);
+  for(int i=0; i<8; i++){
     
+  }
+  Serial.print("V1 = '");
+  Serial.println(ledControlByte, BIN);
+  Serial.println("'");    
+  
 } // BLYNK_WRITE()
 
 void loop() {
@@ -146,7 +162,7 @@ void sendByte(byte val) {
 }
 void checkKeypad() {
   char key = keypad.getKey();
-  Serial.println(key);
+  // Serial.println(key);
   if (key) {
     lcd.setCursor(0,1);
     if (key == '#') {
@@ -183,14 +199,14 @@ void checkGas() {
   int gasValue = analogRead(MQ2_PIN);
   if (gasValue > 2000) { // ngưỡng phát hiện tùy chỉnh
     // digitalWrite(BUZZER_PIN, HIGH);
-    Serial.print("Chay roi: ");
+    // Serial.print("Chay roi: ");
     isQuay = true;
-    Serial.println(gasValue);
+    // Serial.println(gasValue);
   } else {
     // digitalWrite(BUZZER_PIN, LOW);
-    Serial.print("On roi");
+    // Serial.print("On roi");
     isQuay = false;
-    Serial.println(gasValue);
+    // Serial.println(gasValue);
   }
   if(isQuay != fanState){
     quayQuat(isQuay);
@@ -207,11 +223,13 @@ void checkPerson() {
 
   long duration = pulseIn(ECHO_PIN, HIGH);
   float distance = duration * 0.034 / 2;
-  Serial.println(distance);
+  // Serial.println(distance);
   if (distance < 20) {
-    sendByte(0b11111111);// có người
+    ledDoor(1);
+    sendByte(leds);// có người
   } else {
-    sendByte(0b00000000);
+    ledDoor(0);
+    sendByte(leds);
   }
 }
 void quayQuat(bool isQuay){
@@ -226,8 +244,8 @@ void getDataDHT(float &temp, float &rh){
   temp = event.temperature;
   rh = dht.humidity().getEvent(&event);
   rh = event.relative_humidity;
-  Serial.println(temp);
-  Serial.println(rh);
+  // Serial.println(temp);
+  // Serial.println(rh);
 }
 void wifiConnect(){
   WiFi.begin(SECRET_SSID, SECRET_PASS);
@@ -241,4 +259,34 @@ void wifiConnect(){
 void send_data(){
   Blynk.virtualWrite(V0, temperature);
   Blynk.virtualWrite(V2, relative_humidity);
+}
+byte toByte(String str) {
+  int value = str.toInt();  // Works because `str` is of type `String`
+  value = constrain(value, 0, 255);  // Optional: limit to 0–255
+  return (byte)value;
+}
+void ledDoor(bool state){
+  if(state){
+    leds |= 1;
+  }
+  else{
+    leds &= ~1;
+  }
+}
+byte updateByteFromString(byte original, String str) {
+  // Đảm bảo chuỗi có ít nhất 8 ký tự
+  if (str.length() < 8) return original;
+
+  for (int i = 0; i < 8; i++) {
+    char c = str.charAt(i);
+
+    if (c == '1') {
+      original |= (1 << (7 - i));  // Bật bit
+    } else if (c == '0') {
+      original &= ~(1 << (7 - i)); // Tắt bit
+    }
+    // Nếu là ký tự khác (ví dụ 'x'), bỏ qua → giữ nguyên bit gốc
+  }
+
+  return original;
 }
