@@ -74,7 +74,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 bool fanState = false; // True - quay, False - khong quay
 
 // Các biến chính
-String password = "123";
+String password = "0";
 String inputPassword = "";
 bool doorOpen = false;
 
@@ -93,6 +93,7 @@ void send_data();
 byte toByte(String a);
 void ledDoor(bool state);
 byte updateByteFromString(byte original, String str);
+void ledControl(bool state, int viTri);
 
 void setup() {
   Serial.begin(115200);
@@ -127,13 +128,15 @@ BLYNK_WRITE(V1) {
   String LedControl = param.asStr();
   // OR:
   //String value = param.asString();
+  Serial.println(LedControl);
   byte ledControlByte = toByte(LedControl);
-  for(int i=0; i<8; i++){
-    
-  }
   Serial.print("V1 = '");
   Serial.println(ledControlByte, BIN);
-  Serial.println("'");    
+  for(int i=0; i<8; i++){
+    ledControl((ledControlByte >> i) & 0x01, i);
+  }
+  sendByte(toByte(LedControl));
+  Serial.println("'"); 
   
 } // BLYNK_WRITE()
 
@@ -198,15 +201,15 @@ void checkGas() {
   bool isQuay = false;
   int gasValue = analogRead(MQ2_PIN);
   if (gasValue > 2000) { // ngưỡng phát hiện tùy chỉnh
-    // digitalWrite(BUZZER_PIN, HIGH);
-    // Serial.print("Chay roi: ");
+    digitalWrite(BUZZER_PIN, HIGH);
+    Serial.print("Chay roi: ");
     isQuay = true;
-    // Serial.println(gasValue);
+    Serial.println(gasValue);
   } else {
-    // digitalWrite(BUZZER_PIN, LOW);
-    // Serial.print("On roi");
+    digitalWrite(BUZZER_PIN, LOW);
+    Serial.print("On roi");
     isQuay = false;
-    // Serial.println(gasValue);
+    Serial.println(gasValue);
   }
   if(isQuay != fanState){
     quayQuat(isQuay);
@@ -223,7 +226,7 @@ void checkPerson() {
 
   long duration = pulseIn(ECHO_PIN, HIGH);
   float distance = duration * 0.034 / 2;
-  // Serial.println(distance);
+  Serial.println(distance);
   if (distance < 20) {
     ledDoor(1);
     sendByte(leds);// có người
@@ -261,9 +264,10 @@ void send_data(){
   Blynk.virtualWrite(V2, relative_humidity);
 }
 byte toByte(String str) {
-  int value = str.toInt();  // Works because `str` is of type `String`
-  value = constrain(value, 0, 255);  // Optional: limit to 0–255
-  return (byte)value;
+  str.trim();                         // Loại bỏ \n hoặc space
+  const char* cstr = str.c_str();    // Chuyển sang C-string
+  long val = strtol(cstr, NULL, 2);  // Parse ở hệ cơ số 2
+  return (byte)constrain(val, 0, 255);
 }
 void ledDoor(bool state){
   if(state){
@@ -271,6 +275,14 @@ void ledDoor(bool state){
   }
   else{
     leds &= ~1;
+  }
+}
+void ledControl(bool state, int viTri){
+  if(state){
+    leds |= (1 << viTri);
+  }
+  else{
+    leds &= ~(1 << viTri);
   }
 }
 byte updateByteFromString(byte original, String str) {
